@@ -1,0 +1,179 @@
+#! /usr/bin/env python3
+
+# imports
+import os
+from os import path
+from glob import glob
+import signal
+import subprocess
+import sys
+import time
+import inspect
+from pathlib import Path
+
+# suppress traceback
+def exceptionHandler(type, value, traceback):
+  print(value, file=sys.stderr)
+sys.excepthook = exceptionHandler
+
+try:
+    import pwd
+except ImportError:
+    import getpass
+    pwd = None
+
+# global constants
+ENV_KEY = "NODE_ENV"
+PROD_USER = "upstox"
+
+# check that the script is run only from root folder of exploded bundle
+scriptPath = Path(os.path.dirname(os.path.realpath(__file__)))
+cwd = Path(os.getcwd())
+if not cwd.samefile(scriptPath.parent):
+    raise Exception("Please run the script from base directory of the exploded bundle")
+
+dirBase = path.dirname(path.realpath(sys.path[0]))
+
+# for now, we are keeping base dir name as the bundle name
+bundleName = dirBase
+dirState = path.join(dirBase, "state")
+filePid = path.join(dirState, "app.pid")
+
+def currentUser():
+    if pwd:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    else:
+        return getpass.getuser()
+
+def isProdLikeEnvironment():
+    if not os.environ.get(ENV_KEY):
+        return False
+    return os.environ[ENV_KEY].lower() in ['prod', 'uat', 'staging']
+
+if isProdLikeEnvironment():
+    if currentUser() != PROD_USER:
+        #raise Exception("Must be ran as '%s' user in production environments. Please 'sudo su - %s', and try again." % (PROD_USER,PROD_USER))
+        pass
+def createDirectory(dir):
+    if not path.exists(dir):
+        os.mkdir(dir)
+
+def start():
+    if isRunning():
+        print("* %s is already running" % bundleName)
+    else:
+        print("* Starting %s" % bundleName)
+        createDirectory(dirState)
+        command = ["pm2", "start", "ecosystem.config.js", "--time"]
+        subprocess.Popen(command, shell=False, cwd=dirBase)
+
+def run():
+    if isRunning():
+        print("* %s is already running" % bundleName)
+    else:
+        print("* Starting %s" % bundleName)
+        createDirectory(dirState)
+        command = "pm2 start ecosystem.config.js --time --no-daemon"
+        os.system(command)
+        stop()
+
+def stop():
+    if isRunning():
+        sys.stdout.write("* Shutting down %s... " % bundleName)
+        sys.stdout.flush()
+        command = "pm2 stop augmont-proxy-service"
+        process = os.system(command)
+        command = "pm2 delete augmont-proxy-service"
+        process = os.system(command)
+        # while isRunning():
+        #     time.sleep(0.10)
+        sys.stdout.write("Complete\n")
+    else:
+        print("* %s is not running" % bundleName)
+
+def restart():
+    """Stop and start"""
+    stop()
+    start()
+
+def status():
+    """Is app running or not"""
+    if isRunning():
+        print("* %s is running" % (bundleName))
+    else:
+        print("* %s is not running" % bundleName)
+
+def isRunning():
+    command = "pm2 pid augmont-proxy-service"
+    output = os.popen(command).read().rstrip()
+    #if pm2Status contains "online"
+    print(output)
+    if not output:
+        return False
+    elif output[0] is "0":
+        return False
+    else:
+        return True
+
+
+def readPid():
+    file = open(filePid, "r")
+    try:
+        pid = file.readline()
+        return int(pid)
+    except ValueError:
+        raise InvalidPidError("Perhaps app.pid is corrupt? Please remove state/app.pid, \
+            make sure no other instances are already running, and then try again.")
+    finally:
+        file.close()
+
+
+def writePidFile(pid):
+    file = open(filePid, 'w+')
+    try:
+        file.write(str(pid))
+    finally:
+        file.close()
+
+def printUsage():
+    print("Usage: ./bin app [start|stop|restart|status|run]", file=sys.stderr)
+
+def checkAndValidateEnv():
+    print(os.environ.get(ENV_KEY))
+    if not os.environ.get(ENV_KEY):
+        raise Exception("Environment variable not set, Must set the variable '%s' " % ENV_KEY)
+
+if __name__ == "__main__":
+    try:
+        # checkAndValidateEnv()
+        if len(sys.argv) == 1:
+            raise ValueError
+        action = str(sys.argv[1]).strip().lower()
+
+        if action == 'start':
+            # checkAndValidateEnv()
+            start()
+            sys.exit(0)
+        elif action == 'stop':
+            stop()
+            sys.exit(0)
+        elif action == "restart":
+            restart()
+            sys.exit(0)
+        elif action == "status":
+            status()
+            sys.exit(0)
+        elif action == "run":
+            run()
+        else:
+            raise ValueError
+    except (SystemExit):
+        raise
+    except (ValueError):
+        printUsage()
+        sys.exit(2)
+    except:
+        extype, value = sys.exc_info()[:2]
+        print("ERROR: %s (%s)" % (extype, value), file=sys.stderr)
+        sys.exit(1)
+
